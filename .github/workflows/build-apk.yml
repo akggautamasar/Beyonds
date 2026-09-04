@@ -35,6 +35,9 @@ jobs:
         with:
           gradle-version: '8.9'
 
+      - name: Add user-selected output saving
+        run: python3 scripts/patch_storage_access.py
+
       - name: Fix Java array length syntax
         run: sed -i 's/file\.length()/file.length/g' app/src/main/java/com/beyond/v12/MainActivity.java
 
