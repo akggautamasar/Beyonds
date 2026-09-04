@@ -35,6 +35,9 @@ jobs:
         with:
           gradle-version: '8.9'
 
+      - name: Fix Java array length syntax
+        run: sed -i 's/file\.length()/file.length/g' app/src/main/java/com/beyond/v12/MainActivity.java
+
       - name: Build debug APK
         run: gradle --no-daemon assembleDebug
 
