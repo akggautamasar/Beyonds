@@ -55,13 +55,18 @@ jobs:
           if old not in s: raise SystemExit('openCamera pattern not found')
           s = s.replace(old, new, 1)
 
+          old = 'String id=cm.getCameraIdList()[0];'
+          new = 'String id=cm.getCameraIdList()[0];for(String cid:cm.getCameraIdList()){Integer facing=cm.getCameraCharacteristics(cid).get(CameraCharacteristics.LENS_FACING);if(facing!=null&&facing==CameraCharacteristics.LENS_FACING_BACK){id=cid;break;}}'
+          if old not in s: raise SystemExit('camera id pattern not found')
+          s = s.replace(old, new, 1)
+
           old = 'Size sz=map.getOutputSizes(ImageReader.class)[0];for(Size s:map.getOutputSizes(ImageReader.class))if(s.getWidth()*s.getHeight()>sz.getWidth()*sz.getHeight()&&s.getWidth()*s.getHeight()<=1920*1080)sz=s;'
           new = 'Size sz=null;for(Size s:map.getOutputSizes(ImageReader.class)){if(s.getWidth()==640&&s.getHeight()==480){sz=s;break;}}if(sz==null){for(Size s:map.getOutputSizes(ImageReader.class)){if(s.getWidth()*s.getHeight()<=1280*720&&(sz==null||s.getWidth()*s.getHeight()<sz.getWidth()*sz.getHeight()))sz=s;}}if(sz==null)sz=map.getOutputSizes(ImageReader.class)[0];'
           if old not in s: raise SystemExit('camera size pattern not found')
           s = s.replace(old, new, 1)
 
           old = 'reader.setOnImageAvailableListener(r->{Image im=null;try{im=r.acquireLatestImage();if(im==null)return;byte[] y=Yuv.y(im);CameraDecoder.feed(y,im.getWidth(),im.getHeight(),this);}finally{if(im!=null)im.close();}},null);'
-          new = 'reader.setOnImageAvailableListener(r->{Image im=null;try{im=r.acquireLatestImage();if(im==null)return;byte[] y=Yuv.y(im);CameraDecoder.feed(y,im.getWidth(),im.getHeight(),this);}finally{if(im!=null)im.close();}},cameraHandler);'
+          new = 'reader.setOnImageAvailableListener(r->{Image im=null;try{im=r.acquireLatestImage();if(im==null)return;byte[] y=Yuv.y(im);LiveCameraDecoder.feed(y,im.getWidth(),im.getHeight(),this);}finally{if(im!=null)im.close();}},cameraHandler);'
           if old not in s: raise SystemExit('image listener pattern not found')
           s = s.replace(old, new, 1)
 
@@ -76,7 +81,28 @@ jobs:
           s = s.replace(old, new, 1)
 
           p.write_text(s, encoding='utf-8')
-          print('Camera analysis moved off UI thread and capture resolution reduced.')
+          print('Camera analysis moved off UI thread, reduced resolution, and selected rear camera.')
+          PY
+
+      - name: Add robust optical assembly and camera save hook
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('app/src/main/java/com/beyond/v12/MainActivity.java')
+          s = p.read_text(encoding='utf-8')
+          old = '    void status(String s){runOnUiThread(()->status.setText(s));}'
+          new = '''    void saveCameraResult(String name, byte[] data){
+              exec.execute(()->{try{File out=new File(getCacheDir(),safe(name));write(out,data);status("CAMERA DECODED\\n"+data.length+" bytes\\nSHA-256: "+hex(sha(data))+"\\nChoose where to save the recovered file…");requestSave(out,safe(name),"application/octet-stream");}catch(Exception e){status("Camera save failed: "+e.getMessage());}});
+          }
+          void status(String s){runOnUiThread(()->status.setText(s));}'''
+          if old not in s: raise SystemExit('status anchor not found')
+          s = s.replace(old, new, 1)
+          old = 'cameraBtn.setOnClickListener(v->startCamera());'
+          new = 'cameraBtn.setOnClickListener(v->{LiveCameraDecoder.reset();startCamera();});'
+          if old not in s: raise SystemExit('camera button anchor not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s, encoding='utf-8')
+          print('Robust optical assembly and user-selected camera output saving enabled.')
           PY
 
       - name: Fix Java array length syntax
