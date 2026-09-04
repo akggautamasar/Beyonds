@@ -5,141 +5,72 @@ import android.app.*;
 import android.os.*;
 import android.content.*;
 import android.content.pm.PackageManager;
+import android.database.Cursor;
 import android.graphics.*;
 import android.hardware.camera2.*;
 import android.media.*;
 import android.net.Uri;
 import android.provider.OpenableColumns;
+import android.util.Size;
 import android.view.*;
 import android.widget.*;
 import java.io.*;
 import java.nio.*;
 import java.security.MessageDigest;
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.zip.CRC32;
 
-/**
- * Beyond V12 - local file <-> video <-> camera optical transfer.
- * Everything is decoded locally; no network is used.
- */
 public class MainActivity extends Activity {
-    static final int PICK_FILE=101, PICK_VIDEO=102, CAMERA=103;
-    Button encode, decode, cameraBtn;
-    TextView status;
-    ExecutorService exec=Executors.newSingleThreadExecutor();
-    TextureView texture;
-    CameraDevice cam; CameraCaptureSession session; ImageReader reader;
-    volatile boolean cameraRunning=false;
-
-    @Override public void onCreate(Bundle b){ super.onCreate(b); buildUi(); }
-
+    static final int PICK_FILE=101,PICK_VIDEO=102,CAMERA=103;
+    Button encode,decode,cameraBtn; TextView status; ExecutorService exec=Executors.newSingleThreadExecutor();
+    TextureView texture; CameraDevice cam; CameraCaptureSession session; ImageReader reader;
+    @Override public void onCreate(Bundle b){super.onCreate(b);buildUi();}
+    Button button(String s){Button b=new Button(this);b.setText(s);b.setTextSize(15);b.setAllCaps(false);return b;}
     void buildUi(){
-        LinearLayout root=new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setPadding(28,30,28,24);
-        TextView title=new TextView(this); title.setText("BEYOND"); title.setTextSize(32); title.setTypeface(null,1); root.addView(title);
-        TextView sub=new TextView(this); sub.setText("File ↔ Video  •  Screen → Camera"); sub.setTextSize(16); root.addView(sub);
-        Space sp=new Space(this); root.addView(sp,new LinearLayout.LayoutParams(1,24));
-        encode=button("FILE → VIDEO"); decode=button("VIDEO → FILE"); cameraBtn=button("CAMERA → FILE");
-        root.addView(encode); root.addView(decode); root.addView(cameraBtn);
-        status=new TextView(this); status.setText("Ready. Select a file to create a Beyond video, or decode a video."); status.setTextSize(16); status.setPadding(0,28,0,10); root.addView(status,new LinearLayout.LayoutParams(-1,0,1));
-        TextView info=new TextView(this); info.setText("Works offline. Original bytes are verified with SHA-256.\nCamera mode: show a Beyond video full-screen on another device and point the camera at it."); info.setTextSize(13); root.addView(info);
-        setContentView(root);
-        encode.setOnClickListener(v->pick(PICK_FILE)); decode.setOnClickListener(v->pick(PICK_VIDEO)); cameraBtn.setOnClickListener(v->startCamera());
+        LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);root.setPadding(28,30,28,24);
+        TextView title=new TextView(this);title.setText("BEYOND");title.setTextSize(32);title.setTypeface(null,1);root.addView(title);
+        TextView sub=new TextView(this);sub.setText("File ↔ Video  •  Screen → Camera");sub.setTextSize(16);root.addView(sub);
+        Space sp=new Space(this);root.addView(sp,new LinearLayout.LayoutParams(1,24));
+        encode=button("FILE → VIDEO");decode=button("VIDEO → FILE");cameraBtn=button("CAMERA → FILE");root.addView(encode);root.addView(decode);root.addView(cameraBtn);
+        status=new TextView(this);status.setText("Ready. Select a file to create a Beyond video, or decode a video.");status.setTextSize(16);status.setPadding(0,28,0,10);root.addView(status,new LinearLayout.LayoutParams(-1,0,1));
+        TextView info=new TextView(this);info.setText("Works offline. Original bytes are verified with SHA-256.\nCamera mode: show a Beyond video full-screen on another device and point the camera at it.");info.setTextSize(13);root.addView(info);setContentView(root);
+        encode.setOnClickListener(v->pick(PICK_FILE));decode.setOnClickListener(v->pick(PICK_VIDEO));cameraBtn.setOnClickListener(v->startCamera());
     }
-    Button button(String s){ Button b=new Button(this); b.setText(s); b.setTextSize(15); b.setAllCaps(false); b.setPadding(12,18,12,18); return b; }
-    void pick(int what){ Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT); i.addCategory(Intent.CATEGORY_OPENABLE); i.setType(what==PICK_FILE?"*/*":"video/*"); startActivityForResult(i,what); }
-    @Override protected void onActivityResult(int r,int c,Intent d){ super.onActivityResult(r,c,d); if(c!=RESULT_OK||d==null)return; Uri u=d.getData(); if(r==PICK_FILE) encodeFile(u); else if(r==PICK_VIDEO) decodeVideo(u); }
-
-    void encodeFile(Uri uri){
-        exec.execute(()->{ try{
-            String name=getName(uri); byte[] data=readAll(uri); status("Encoding " + name + "\n"+data.length+" bytes…");
-            File out=new File(getExternalFilesDir(null),safe(name)+".beyond.mp4"); VideoCodec.encode(this,data,name,out,p->status("Encoding… "+p+"%"));
-            status("DONE\n"+out.getAbsolutePath()+"\n\n"+data.length+" bytes encoded.\nSHA-256: "+hex(sha(data)));
-        }catch(Exception e){status("Encode failed: "+e);}});
-    }
-    void decodeVideo(Uri uri){
-        exec.execute(()->{ try{
-            status("Reading Beyond video…"); File tmp=new File(getCacheDir(),"input.mp4"); copy(uri,tmp);
-            Packet.Result r=VideoCodec.decode(tmp,p->status("Decoding… "+p+"%"));
-            File out=new File(getExternalFilesDir(null),safe(r.name)); write(out,r.data);
-            status("DONE\nRecovered: "+out.getAbsolutePath()+"\nSize: "+r.data.length+" bytes\nSHA-256: "+hex(sha(r.data)));
-        }catch(Exception e){status("Decode failed: "+e.getMessage());}});
-    }
-
-    void startCamera(){
-        if(checkSelfPermission(Manifest.permission.CAMERA)!=PackageManager.PERMISSION_GRANTED){ requestPermissions(new String[]{Manifest.permission.CAMERA},CAMERA); return; }
-        showCameraUi();
-    }
-    void showCameraUi(){
-        LinearLayout root=new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL);
-        FrameLayout frame=new FrameLayout(this); texture=new TextureView(this); frame.addView(texture,new FrameLayout.LayoutParams(-1,-1));
-        TextView guide=new TextView(this); guide.setText("ALIGN THE BEYOND VIDEO INSIDE THE FRAME\nCamera decoding is local"); guide.setGravity(Gravity.CENTER); guide.setTextSize(16); guide.setTextColor(Color.WHITE); guide.setBackgroundColor(0x55000000); FrameLayout.LayoutParams gp=new FrameLayout.LayoutParams(-1,170,Gravity.CENTER); frame.addView(guide,gp);
-        root.addView(frame,new LinearLayout.LayoutParams(-1,0,1));
-        status=new TextView(this); status.setText("Starting camera…"); status.setPadding(20,15,20,15); root.addView(status);
-        Button stop=button("STOP / BACK"); root.addView(stop); stop.setOnClickListener(v->{stopCamera();buildUi();}); setContentView(root);
-        texture.setSurfaceTextureListener(new TextureView.SurfaceTextureListener(){ public void onSurfaceTextureAvailable(android.graphics.SurfaceTexture s,int w,int h){openCamera();} public void onSurfaceTextureSizeChanged(android.graphics.SurfaceTexture s,int w,int h){} public boolean onSurfaceTextureDestroyed(android.graphics.SurfaceTexture s){return true;} public void onSurfaceTextureUpdated(android.graphics.SurfaceTexture s){} });
-    }
-    void openCamera(){ try{
-        CameraManager cm=(CameraManager)getSystemService(CAMERA_SERVICE); String id=cm.getCameraIdList()[0]; CameraCharacteristics cc=cm.getCameraCharacteristics(id);
-        android.hardware.camera2.params.StreamConfigurationMap map=cc.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP); Size sz=map.getOutputSizes(ImageReader.class)[0];
-        for(Size s:map.getOutputSizes(ImageReader.class)) if(s.getWidth()*s.getHeight()>sz.getWidth()*sz.getHeight()&&s.getWidth()*s.getHeight()<=1920*1080)sz=s;
-        reader=ImageReader.newInstance(sz.getWidth(),sz.getHeight(),ImageFormat.YUV_420_888,3); reader.setOnImageAvailableListener(r->{ Image im=null; try{ im=r.acquireLatestImage(); if(im==null)return; byte[] y=Yuv.y(im); CameraDecoder.feed(y,im.getWidth(),im.getHeight(),this); }finally{if(im!=null)im.close();}},null);
-        cm.openCamera(id,new CameraDevice.StateCallback(){ public void onOpened(CameraDevice c){cam=c;try{Surface ps=new Surface(texture.getSurfaceTexture()); List<Surface> os=Arrays.asList(ps,reader.getSurface()); c.createCaptureSession(os,new CameraCaptureSession.StateCallback(){ public void onConfigured(CameraCaptureSession s){session=s;try{CaptureRequest.Builder b=c.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);b.addTarget(ps);b.addTarget(reader.getSurface());b.set(CaptureRequest.CONTROL_AF_MODE,CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);b.set(CaptureRequest.CONTROL_AE_MODE,CaptureRequest.CONTROL_AE_MODE_ON);s.setRepeatingRequest(b.build(),null,null);cameraRunning=true;status("Camera active. Point at a Beyond video.");}catch(Exception e){status("Capture error: "+e);}}public void onConfigureFailed(CameraCaptureSession s){status("Camera session failed");}},null);}catch(Exception e){status("Camera setup: "+e);}} public void onDisconnected(CameraDevice c){c.close();cam=null;} public void onError(CameraDevice c,int e){c.close();cam=null;status("Camera error "+e);}},null);
-    }catch(Exception e){status("Camera failed: "+e);}}
-    void stopCamera(){cameraRunning=false;try{if(session!=null)session.close();if(cam!=null)cam.close();if(reader!=null)reader.close();}catch(Exception ignored){}}
-
+    void pick(int what){Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);i.addCategory(Intent.CATEGORY_OPENABLE);i.setType(what==PICK_FILE?"*/*":"video/*");startActivityForResult(i,what);}
+    @Override protected void onActivityResult(int r,int c,Intent d){super.onActivityResult(r,c,d);if(c!=RESULT_OK||d==null)return;Uri u=d.getData();if(r==PICK_FILE)encodeFile(u);else if(r==PICK_VIDEO)decodeVideo(u);}
+    void encodeFile(Uri uri){exec.execute(()->{try{String name=getName(uri);byte[] data=readAll(uri);status("Encoding "+name+"\n"+data.length+" bytes…");File out=new File(getExternalFilesDir(null),safe(name)+".beyond.mp4");VideoCodec.encode(data,name,out,p->status("Encoding… "+p+"%"));status("DONE\n"+out.getAbsolutePath()+"\n\n"+data.length+" bytes encoded.\nSHA-256: "+hex(sha(data)));}catch(Exception e){status("Encode failed: "+e);}});}
+    void decodeVideo(Uri uri){exec.execute(()->{try{status("Reading Beyond video…");File tmp=new File(getCacheDir(),"input.mp4");copy(uri,tmp);Packet.Result r=VideoCodec.decode(tmp,p->status("Decoding… "+p+"%"));File out=new File(getExternalFilesDir(null),safe(r.name));write(out,r.data);status("DONE\nRecovered: "+out.getAbsolutePath()+"\nSize: "+r.data.length+" bytes\nSHA-256: "+hex(sha(r.data)));}catch(Exception e){status("Decode failed: "+e.getMessage());}});}
+    void startCamera(){if(checkSelfPermission(Manifest.permission.CAMERA)!=PackageManager.PERMISSION_GRANTED){requestPermissions(new String[]{Manifest.permission.CAMERA},CAMERA);return;}showCameraUi();}
+    void showCameraUi(){LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);FrameLayout frame=new FrameLayout(this);texture=new TextureView(this);frame.addView(texture,new FrameLayout.LayoutParams(-1,-1));TextView guide=new TextView(this);guide.setText("ALIGN THE BEYOND VIDEO INSIDE THE FRAME\nCamera decoding is local");guide.setGravity(Gravity.CENTER);guide.setTextSize(16);guide.setTextColor(Color.WHITE);guide.setBackgroundColor(0x55000000);frame.addView(guide,new FrameLayout.LayoutParams(-1,170,Gravity.CENTER));root.addView(frame,new LinearLayout.LayoutParams(-1,0,1));status=new TextView(this);status.setText("Starting camera…");status.setPadding(20,15,20,15);root.addView(status);Button stop=button("STOP / BACK");root.addView(stop);stop.setOnClickListener(v->{stopCamera();buildUi();});setContentView(root);texture.setSurfaceTextureListener(new TextureView.SurfaceTextureListener(){public void onSurfaceTextureAvailable(android.graphics.SurfaceTexture s,int w,int h){openCamera();}public void onSurfaceTextureSizeChanged(android.graphics.SurfaceTexture s,int w,int h){}public boolean onSurfaceTextureDestroyed(android.graphics.SurfaceTexture s){return true;}public void onSurfaceTextureUpdated(android.graphics.SurfaceTexture s){}});}
+    void openCamera(){try{CameraManager cm=(CameraManager)getSystemService(CAMERA_SERVICE);String id=cm.getCameraIdList()[0];CameraCharacteristics cc=cm.getCameraCharacteristics(id);android.hardware.camera2.params.StreamConfigurationMap map=cc.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);Size sz=map.getOutputSizes(ImageReader.class)[0];for(Size s:map.getOutputSizes(ImageReader.class))if(s.getWidth()*s.getHeight()>sz.getWidth()*sz.getHeight()&&s.getWidth()*s.getHeight()<=1920*1080)sz=s;reader=ImageReader.newInstance(sz.getWidth(),sz.getHeight(),ImageFormat.YUV_420_888,3);reader.setOnImageAvailableListener(r->{Image im=null;try{im=r.acquireLatestImage();if(im==null)return;byte[] y=Yuv.y(im);CameraDecoder.feed(y,im.getWidth(),im.getHeight(),this);}finally{if(im!=null)im.close();}},null);cm.openCamera(id,new CameraDevice.StateCallback(){public void onOpened(CameraDevice c){cam=c;try{Surface ps=new Surface(texture.getSurfaceTexture());List<Surface> os=Arrays.asList(ps,reader.getSurface());c.createCaptureSession(os,new CameraCaptureSession.StateCallback(){public void onConfigured(CameraCaptureSession s){session=s;try{CaptureRequest.Builder b=c.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);b.addTarget(ps);b.addTarget(reader.getSurface());b.set(CaptureRequest.CONTROL_AF_MODE,CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);b.set(CaptureRequest.CONTROL_AE_MODE,CaptureRequest.CONTROL_AE_MODE_ON);s.setRepeatingRequest(b.build(),null,null);status("Camera active. Point at a Beyond video.");}catch(Exception e){status("Capture error: "+e);}}public void onConfigureFailed(CameraCaptureSession s){status("Camera session failed");}},null);}catch(Exception e){status("Camera setup: "+e);}}public void onDisconnected(CameraDevice c){c.close();cam=null;}public void onError(CameraDevice c,int e){c.close();cam=null;status("Camera error "+e);}},null);}catch(Exception e){status("Camera failed: "+e);}}
+    void stopCamera(){try{if(session!=null)session.close();if(cam!=null)cam.close();if(reader!=null)reader.close();}catch(Exception ignored){}}
     void status(String s){runOnUiThread(()->status.setText(s));}
     String getName(Uri u){String n=null;Cursor c=getContentResolver().query(u,null,null,null,null);if(c!=null){try{if(c.moveToFirst()){int x=c.getColumnIndex(OpenableColumns.DISPLAY_NAME);if(x>=0)n=c.getString(x);}}finally{c.close();}}return n==null?"file.bin":n;}
     byte[] readAll(Uri u)throws Exception{InputStream in=getContentResolver().openInputStream(u);ByteArrayOutputStream o=new ByteArrayOutputStream();byte[] b=new byte[65536];int n;while((n=in.read(b))>0)o.write(b,0,n);in.close();return o.toByteArray();}
     void copy(Uri u,File f)throws Exception{InputStream in=getContentResolver().openInputStream(u);OutputStream o=new FileOutputStream(f);byte[] b=new byte[65536];int n;while((n=in.read(b))>0)o.write(b,0,n);in.close();o.close();}
     static void write(File f,byte[] b)throws Exception{FileOutputStream o=new FileOutputStream(f);o.write(b);o.close();}
-    static String safe(String s){return s.replaceAll("[^a-zA-Z0-9._-]","_");}
-    static byte[] sha(byte[] b)throws Exception{return MessageDigest.getInstance("SHA-256").digest(b);}
-    static String hex(byte[] b){StringBuilder s=new StringBuilder();for(byte x:b)s.append(String.format("%02x",x&255));return s.toString();}
+    static String safe(String s){return s.replaceAll("[^a-zA-Z0-9._-]","_");}static byte[] sha(byte[] b)throws Exception{return MessageDigest.getInstance("SHA-256").digest(b);}static String hex(byte[] b){StringBuilder s=new StringBuilder();for(byte x:b)s.append(String.format("%02x",x&255));return s.toString();}
     @Override protected void onDestroy(){stopCamera();exec.shutdownNow();super.onDestroy();}
 
     interface Progress{void set(int p);}
-
-    static class Packet {
-        static final byte[] MAGIC=new byte[]{'B','Y','N','1'}; static final int HEADER=64, CELL=8, W=640,H=480,COLS=80,ROWS=60;
-        static byte[] make(String name,byte[] file,int frame,int total,int off,int len)throws Exception{
-            byte[] h=new byte[HEADER];System.arraycopy(MAGIC,0,h,0,4);putInt(h,4,1);putInt(h,8,frame);putInt(h,12,total);putInt(h,16,len);putLong(h,20,file.length);byte[] nh=name.getBytes("UTF-8");putInt(h,28,nh.length);System.arraycopy(nh,0,h,32,Math.min(24,nh.length));CRC32 c=new CRC32();c.update(file,off,len);putInt(h,56,(int)c.getValue());return h;
-        }
-        static byte[] frame(byte[] h,byte[] payload){byte[] bits=new byte[(W/CELL)*(H/CELL)];Arrays.fill(bits,(byte)255);int[] fx={0,COLS-8,COLS-8,0},fy={0,0,ROWS-8,ROWS-8};for(int k=0;k<4;k++)for(int y=0;y<8;y++)for(int x=0;x<8;x++)bits[(fy[k]+y)*COLS+fx[k]+x]=(byte)((x==0||y==0||x==7||y==7||((x>=2&&x<=5)&&(y>=2&&y<=5)))?0:255);
-            int pos=4*64;for(byte b:h)for(int i=7;i>=0;i--)bits[pos++]=(byte)(((b>>i)&1)==1?0:255);for(byte b:payload)for(int i=7;i>=0;i--)bits[pos++]=(byte)(((b>>i)&1)==1?0:255);byte[] out=new byte[W*H];for(int gy=0;gy<ROWS;gy++)for(int gx=0;gx<COLS;gx++){byte v=bits[gy*COLS+gx];for(int y=0;y<CELL;y++)Arrays.fill(out,(gy*CELL+y)*W+gx*CELL,(gy*CELL+y)*W+gx*CELL+CELL,v);}return out;
-        }
-        static int getInt(byte[] b,int p){return ByteBuffer.wrap(b,p,4).getInt();} static long getLong(byte[] b,int p){return ByteBuffer.wrap(b,p,8).getLong();} static void putInt(byte[]b,int p,int v){ByteBuffer.wrap(b,p,4).putInt(v);}static void putLong(byte[]b,int p,long v){ByteBuffer.wrap(b,p,8).putLong(v);}
+    static class Packet{
+        static final byte[] MAGIC=new byte[]{'B','Y','N','1'};static final int HEADER=64,CELL=8,W=640,H=480,COLS=80,ROWS=60;
+        static byte[] make(String name,byte[] file,int frame,int total,int len)throws Exception{byte[] h=new byte[HEADER];System.arraycopy(MAGIC,0,h,0,4);putInt(h,4,1);putInt(h,8,frame);putInt(h,12,total);putInt(h,16,len);putLong(h,20,file.length);byte[] nh=name.getBytes("UTF-8");putInt(h,28,nh.length);System.arraycopy(nh,0,h,32,Math.min(24,nh.length));CRC32 c=new CRC32();c.update(file,frame*504,len);putInt(h,56,(int)c.getValue());return h;}
+        static byte[] frame(byte[] h,byte[] payload){byte[] cells=new byte[COLS*ROWS];Arrays.fill(cells,(byte)255);int[] fx={0,COLS-8,COLS-8,0},fy={0,0,ROWS-8,ROWS-8};for(int k=0;k<4;k++)for(int y=0;y<8;y++)for(int x=0;x<8;x++)cells[(fy[k]+y)*COLS+fx[k]+x]=(byte)((x==0||y==0||x==7||y==7||((x>=2&&x<=5)&&(y>=2&&y<=5)))?0:255);int pos=256;for(byte b:h)for(int i=7;i>=0;i--)cells[pos++]=(byte)(((b>>i)&1)==1?0:255);for(byte b:payload)for(int i=7;i>=0;i--)cells[pos++]=(byte)(((b>>i)&1)==1?0:255);byte[] out=new byte[W*H];for(int gy=0;gy<ROWS;gy++)for(int gx=0;gx<COLS;gx++){byte v=cells[gy*COLS+gx];for(int yy=0;yy<CELL;yy++)Arrays.fill(out,(gy*CELL+yy)*W+gx*CELL,(gy*CELL+yy)*W+gx*CELL+CELL,v);}return out;}
+        static int getInt(byte[]b,int p){return ByteBuffer.wrap(b,p,4).getInt();}static long getLong(byte[]b,int p){return ByteBuffer.wrap(b,p,8).getLong();}static void putInt(byte[]b,int p,int v){ByteBuffer.wrap(b,p,4).putInt(v);}static void putLong(byte[]b,int p,long v){ByteBuffer.wrap(b,p,8).putLong(v);}
         static class Result{String name;byte[] data;Result(String n,byte[]d){name=n;data=d;}}
     }
-
-    static class VideoCodec {
-        static final int FPS=10, PAYLOAD=504;
-        static void encode(Context ctx,byte[] file,String name,File out,Progress pr)throws Exception{
-            int total=(file.length+PAYLOAD-1)/PAYLOAD; if(total==0)total=1;
-            MediaCodec c=MediaCodec.createEncoderByType("video/avc"); MediaFormat f=MediaFormat.createVideoFormat("video/avc",640,480);f.setInteger(MediaFormat.KEY_COLOR_FORMAT,MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible);f.setInteger(MediaFormat.KEY_BIT_RATE,3500000);f.setInteger(MediaFormat.KEY_FRAME_RATE,FPS);f.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL,1);c.configure(f,null,null,MediaCodec.CONFIGURE_FLAG_ENCODE);c.start();
-            MediaMuxer mux=new MediaMuxer(out.getAbsolutePath(),MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);MediaCodec.BufferInfo bi=new MediaCodec.BufferInfo();int track=-1;boolean muxStarted=false;long pts=0;
-            for(int fi=0;fi<total;fi++){int off=Math.min(file.length(),fi*PAYLOAD),len=Math.min(PAYLOAD,file.length()-off);byte[] h=Packet.make(name,file,fi,total,off,len);byte[] y=Packet.frame(h,Arrays.copyOfRange(file,off,off+len));feed(c,y,pts);pts+=1000000L/FPS;drain(c,mux,biHolder(track),false);if(track<0&&lastTrack>=0){track=lastTrack; if(!muxStarted){mux.start();muxStarted=true;}}pr.set((fi+1)*100/total);}
-            feed(c,null,pts);drainUntilEnd(c,mux,biHolder(track),muxStarted);c.stop();c.release();if(muxStarted)mux.stop();mux.release();
+    static class VideoCodec{
+        static final int FPS=10,PAYLOAD=504;
+        static void encode(byte[]file,String name,File out,Progress pr)throws Exception{int total=Math.max(1,(file.length+PAYLOAD-1)/PAYLOAD);MediaCodec c=MediaCodec.createEncoderByType("video/avc");MediaFormat f=MediaFormat.createVideoFormat("video/avc",640,480);f.setInteger(MediaFormat.KEY_COLOR_FORMAT,MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible);f.setInteger(MediaFormat.KEY_BIT_RATE,3500000);f.setInteger(MediaFormat.KEY_FRAME_RATE,FPS);f.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL,1);c.configure(f,null,null,MediaCodec.CONFIGURE_FLAG_ENCODE);c.start();MediaMuxer m=new MediaMuxer(out.getAbsolutePath(),MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);MediaCodec.BufferInfo bi=new MediaCodec.BufferInfo();int track=-1;boolean started=false;long pts=0;
+            for(int fi=0;fi<total;fi++){int off=fi*PAYLOAD,len=Math.min(PAYLOAD,Math.max(0,file.length()-off));byte[] payload=len==0?new byte[0]:Arrays.copyOfRange(file,off,off+len);byte[] y=Packet.frame(Packet.make(name,file,fi,total,len),payload);int in=c.dequeueInputBuffer(10000);if(in<0)throw new IOException("encoder input timeout");ByteBuffer ib=c.getInputBuffer(in);ib.clear();Yuv.grayToI420(y,640,480,ib);c.queueInputBuffer(in,0,640*480+640*480/2,pts,0);pts+=1000000L/FPS;while(true){int o=c.dequeueOutputBuffer(bi,0);if(o==MediaCodec.INFO_TRY_AGAIN_LATER)break;if(o==MediaCodec.INFO_OUTPUT_FORMAT_CHANGED){if(started)throw new IllegalStateException("format changed twice");track=m.addTrack(c.getOutputFormat());m.start();started=true;}else if(o>=0){if(started&&(bi.flags&MediaCodec.BUFFER_FLAG_CODEC_CONFIG)==0)m.writeSampleData(track,c.getOutputBuffer(o),bi);c.releaseOutputBuffer(o,false);}}pr.set((fi+1)*100/total);}
+            int in=c.dequeueInputBuffer(10000);if(in>=0)c.queueInputBuffer(in,0,0,pts,MediaCodec.BUFFER_FLAG_END_OF_STREAM);boolean eos=false;while(!eos){int o=c.dequeueOutputBuffer(bi,10000);if(o==MediaCodec.INFO_OUTPUT_FORMAT_CHANGED){if(!started){track=m.addTrack(c.getOutputFormat());m.start();started=true;}}else if(o>=0){if(started&&(bi.flags&MediaCodec.BUFFER_FLAG_CODEC_CONFIG)==0)m.writeSampleData(track,c.getOutputBuffer(o),bi);eos=(bi.flags&MediaCodec.BUFFER_FLAG_END_OF_STREAM)!=0;c.releaseOutputBuffer(o,false);}}
+            c.stop();c.release();if(started)m.stop();m.release();
         }
-        static int lastTrack=-1; static int[] biHolder(int x){return new int[]{x};}
-        static void feed(MediaCodec c,byte[] y,long pts)throws Exception{int in=c.dequeueInputBuffer(10000);if(in<0)throw new IOException("encoder input timeout");ByteBuffer b=c.getInputBuffer(in);b.clear();if(y==null)c.queueInputBuffer(in,0,0,pts,MediaCodec.BUFFER_FLAG_END_OF_STREAM);else{Yuv.grayToI420(y,640,480,b);c.queueInputBuffer(in,0,640*480+640*480/2,pts,0);}}
-        static void drain(MediaCodec c,MediaMuxer m,int[] tr,boolean end)throws Exception{MediaCodec.BufferInfo bi=new MediaCodec.BufferInfo();while(true){int o=c.dequeueOutputBuffer(bi,0);if(o==MediaCodec.INFO_TRY_AGAIN_LATER)break;if(o==MediaCodec.INFO_OUTPUT_FORMAT_CHANGED){lastTrack=m.addTrack(c.getOutputFormat());tr[0]=lastTrack;continue;}if(o>=0){if((bi.flags&MediaCodec.BUFFER_FLAG_CODEC_CONFIG)==0&&tr[0]>=0)m.writeSampleData(tr[0],c.getOutputBuffer(o),bi);c.releaseOutputBuffer(o,false);}}}
-        static void drainUntilEnd(MediaCodec c,MediaMuxer m,int[] tr,boolean started)throws Exception{MediaCodec.BufferInfo bi=new MediaCodec.BufferInfo();while(true){int o=c.dequeueOutputBuffer(bi,10000);if(o==MediaCodec.INFO_TRY_AGAIN_LATER)continue;if(o==MediaCodec.INFO_OUTPUT_FORMAT_CHANGED){if(tr[0]<0){tr[0]=m.addTrack(c.getOutputFormat());if(!started)m.start();}continue;}if(o>=0){if((bi.flags&MediaCodec.BUFFER_FLAG_CODEC_CONFIG)==0&&tr[0]>=0)m.writeSampleData(tr[0],c.getOutputBuffer(o),bi);boolean eos=(bi.flags&MediaCodec.BUFFER_FLAG_END_OF_STREAM)!=0;c.releaseOutputBuffer(o,false);if(eos)break;}}}
-        static Packet.Result decode(File in,Progress pr)throws Exception{
-            MediaExtractor ex=new MediaExtractor();ex.setDataSource(in.getAbsolutePath());int ti=0;for(int i=0;i<ex.getTrackCount();i++){MediaFormat tf=ex.getTrackFormat(i);if(tf.getString(MediaFormat.KEY_MIME).startsWith("video/")){ti=i;break;}}ex.selectTrack(ti);MediaFormat fmt=ex.getTrackFormat(ti);MediaCodec c=MediaCodec.createDecoderByType(fmt.getString(MediaFormat.KEY_MIME));c.configure(fmt,null,null,0);c.start();ByteArrayOutputStream all=new ByteArrayOutputStream();String name="file.bin";int total=0,got=0;byte[] hdr=null;MediaCodec.BufferInfo bi=new MediaCodec.BufferInfo();boolean eos=false;
-            while(!eos){int ii=c.dequeueInputBuffer(10000);if(ii>=0){ByteBuffer b=c.getInputBuffer(ii);b.clear();int n=ex.readSampleData(b,0);if(n<0){c.queueInputBuffer(ii,0,0,0,MediaCodec.BUFFER_FLAG_END_OF_STREAM);eos=true;}else{c.queueInputBuffer(ii,0,n,ex.getSampleTime(),0);ex.advance();}}
-                int oi=c.dequeueOutputBuffer(bi,10000);if(oi>=0){Image im=c.getOutputImage(oi);if(im!=null){byte[] y=Yuv.y(im);byte[] p=Vision.parse(y,im.getWidth(),im.getHeight());if(p!=null){if(hdr==null&&p.length>=64&&Arrays.equals(Arrays.copyOf(p,4),Packet.MAGIC)){hdr=Arrays.copyOf(p,64);total=Packet.getInt(hdr,12);int len=Packet.getInt(hdr,16);name=new String(hdr,32,Math.min(24,Packet.getInt(hdr,28)),"UTF-8");all.write(p,64,len);got++;pr.set(Math.min(99,got*100/Math.max(1,total)));}}im.close();}c.releaseOutputBuffer(oi,false);}}
-            c.stop();c.release();ex.release();byte[] data=all.toByteArray();if(hdr==null)throw new IOException("No Beyond frames found");long size=Packet.getLong(hdr,20);if(data.length>size)data=Arrays.copyOf(data,(int)size);return new Packet.Result(name,data);
-        }
+        static Packet.Result decode(File in,Progress pr)throws Exception{MediaExtractor ex=new MediaExtractor();ex.setDataSource(in.getAbsolutePath());int ti=-1;for(int i=0;i<ex.getTrackCount();i++)if(ex.getTrackFormat(i).getString(MediaFormat.KEY_MIME).startsWith("video/")){ti=i;break;}if(ti<0)throw new IOException("No video track");ex.selectTrack(ti);MediaFormat fmt=ex.getTrackFormat(ti);MediaCodec c=MediaCodec.createDecoderByType(fmt.getString(MediaFormat.KEY_MIME));c.configure(fmt,null,null,0);c.start();ByteArrayOutputStream all=new ByteArrayOutputStream();String name="file.bin";long expected=-1;int total=0,got=0;MediaCodec.BufferInfo bi=new MediaCodec.BufferInfo();boolean inputEos=false,outputEos=false;while(!outputEos){if(!inputEos){int ii=c.dequeueInputBuffer(10000);if(ii>=0){ByteBuffer b=c.getInputBuffer(ii);b.clear();int n=ex.readSampleData(b,0);if(n<0){c.queueInputBuffer(ii,0,0,0,MediaCodec.BUFFER_FLAG_END_OF_STREAM);inputEos=true;}else{c.queueInputBuffer(ii,0,n,ex.getSampleTime(),0);ex.advance();}}}int oi=c.dequeueOutputBuffer(bi,10000);if(oi>=0){Image im=c.getOutputImage(oi);if(im!=null){byte[] y=Yuv.y(im);byte[] p=Vision.parse(y,im.getWidth(),im.getHeight());if(p!=null&&Arrays.equals(Arrays.copyOf(p,4),Packet.MAGIC)){int frame=Packet.getInt(p,8);int t=Packet.getInt(p,12);int len=Packet.getInt(p,16);if(total==0)total=t;expected=Packet.getLong(p,20);if(frame==got){name=new String(p,32,Math.min(24,Packet.getInt(p,28)),"UTF-8");all.write(p,64,len);got++;pr.set(Math.min(99,got*100/Math.max(1,total)));}}im.close();}outputEos=(bi.flags&MediaCodec.BUFFER_FLAG_END_OF_STREAM)!=0;c.releaseOutputBuffer(oi,false);}}c.stop();c.release();ex.release();if(total<=0||got<total)throw new IOException("Incomplete Beyond video: "+got+"/"+total+" frames");byte[] data=all.toByteArray();if(expected>=0&&data.length>expected)data=Arrays.copyOf(data,(int)expected);return new Packet.Result(name,data);}
     }
-
-    static class Vision {
-        static byte[] parse(byte[] y,int w,int h){ if(w<160||h<120)return null;int sx=w/640,sy=h/480;if(sx<1||sy<1)return null;byte[] bits=new byte[80*60];for(int gy=0;gy<60;gy++)for(int gx=0;gx<80;gx++){int x=Math.min(w-1,(gx* w)/80+w/160);int yy=Math.min(h-1,(gy*h)/60+h/120);bits[gy*80+gx]=(byte)(y[yy*w+x]&255);}
-            int p=4*64;byte[] out=new byte[64+504];for(int i=0;i<out.length;i++){int v=0;for(int j=0;j<8;j++){int q=p++;v=(v<<1)|((bits[q]&255)<128?1:0);}out[i]=(byte)v;}return out; }
-    }
-    static class CameraDecoder { static int n=0; static ByteArrayOutputStream data=new ByteArrayOutputStream(); static String name="file.bin"; static void feed(byte[] y,int w,int h,MainActivity a){ if((n++%3)!=0)return; byte[] p=Vision.parse(y,w,h); if(p!=null&&p.length>=64&&Arrays.equals(Arrays.copyOf(p,4),Packet.MAGIC)){int len=Packet.getInt(p,16);try{if(n==1)name=new String(p,32,Math.min(24,Packet.getInt(p,28)),"UTF-8");data.write(p,64,Math.min(len,p.length-64));a.status("Camera: received frame "+n+"\nBytes: "+data.size());if(data.size()>=Packet.getLong(p,20)){File f=new File(a.getExternalFilesDir(null),safe(name));write(f,data.toByteArray());a.status("DONE\nRecovered: "+f.getAbsolutePath()+"\nBytes: "+data.size());data.reset();n=0;}}catch(Exception e){a.status("Camera decode: "+e);}} }}
-
-    static class Yuv {
-        static byte[] y(Image im){ByteBuffer b=im.getPlanes()[0].getBuffer();int row=im.getPlanes()[0].getRowStride(),pix=im.getPlanes()[0].getPixelStride();byte[] o=new byte[im.getWidth()*im.getHeight()];for(int yy=0;yy<im.getHeight();yy++)for(int x=0;x<im.getWidth();x++){int q=yy*row+x*pix;if(q<b.limit())o[yy*im.getWidth()+x]=b.get(q);}return o;}
-        static void grayToI420(byte[] g,int w,int h,ByteBuffer out){out.put(g);int n=w*h;for(int i=0;i<n/4;i++)out.put((byte)128);for(int i=0;i<n/4;i++)out.put((byte)128);}
-    }
+    static class Vision{static byte[] parse(byte[]y,int w,int h){if(w<160||h<120)return null;byte[]bits=new byte[80*60];for(int gy=0;gy<60;gy++)for(int gx=0;gx<80;gx++){int x=Math.min(w-1,(gx*w)/80);int yy=Math.min(h-1,(gy*h)/60);bits[gy*80+gx]=y[yy*w+x];}int p=256;byte[]out=new byte[64+504];for(int i=0;i<out.length;i++){int v=0;for(int j=0;j<8;j++)v=(v<<1)|((bits[p++]&255)<128?1:0);out[i]=(byte)v;}return out;}}
+    static class CameraDecoder{static int n=0;static ByteArrayOutputStream data=new ByteArrayOutputStream();static int expected=-1;static String name="file.bin";static void feed(byte[]y,int w,int h,MainActivity a){if((n++%2)!=0)return;byte[]p=Vision.parse(y,w,h);if(p!=null&&Arrays.equals(Arrays.copyOf(p,4),Packet.MAGIC)){int len=Packet.getInt(p,16);expected=(int)Packet.getLong(p,20);try{if(data.size()==0)name=new String(p,32,Math.min(24,Packet.getInt(p,28)),"UTF-8");data.write(p,64,Math.min(len,p.length-64));a.status("Camera: received data\nBytes: "+data.size()+" / "+expected);if(expected>=0&&data.size()>=expected){byte[]b=Arrays.copyOf(data.toByteArray(),expected);File f=new File(a.getExternalFilesDir(null),safe(name));write(f,b);a.status("DONE\nRecovered: "+f.getAbsolutePath()+"\nBytes: "+b.length);data.reset();n=0;expected=-1;}}catch(Exception e){a.status("Camera decode: "+e);}}}}
+    static class Yuv{static byte[] y(Image im){ByteBuffer b=im.getPlanes()[0].getBuffer();int row=im.getPlanes()[0].getRowStride(),pix=im.getPlanes()[0].getPixelStride();byte[]o=new byte[im.getWidth()*im.getHeight()];for(int yy=0;yy<im.getHeight();yy++)for(int x=0;x<im.getWidth();x++){int q=yy*row+x*pix;if(q<b.limit())o[yy*im.getWidth()+x]=b.get(q);}return o;}static void grayToI420(byte[]g,int w,int h,ByteBuffer out){out.put(g);int n=w*h;for(int i=0;i<n/4;i++)out.put((byte)128);for(int i=0;i<n/4;i++)out.put((byte)128);}}
 }
